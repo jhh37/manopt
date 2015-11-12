@@ -48,7 +48,7 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
 %       search in manopt is @linesearch_adaptive, in
 %       /manopt/linesearch/linesearch_adaptive.m
 %       If the problem structure includes a line search hint, then the
-%       default line search used in @linesearch_hint.
+%       default line search used is @linesearch_hint.
 %   statsfun (none)
 %       Function handle to a function that will be called after each
 %       iteration to provide the opportunity to log additional statistics.
@@ -76,18 +76,21 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
 % Original author: Nicolas Boumal, Dec. 30, 2012.
 % Contributors: 
 % Change log: 
+%
+%   April 3, 2015 (NB):
+%       Works with the new StoreDB class system.
 
     
     % Verify that the problem description is sufficient for the solver.
     if ~canGetCost(problem)
         warning('manopt:getCost', ...
-                'No cost provided. The algorithm will likely abort.');  
+                'No cost provided. The algorithm will likely abort.');
     end
     if ~canGetGradient(problem)
         warning('manopt:getGradient', ...
-                'No gradient provided. The algorithm will likely abort.');    
+                'No gradient provided. The algorithm will likely abort.');
     end
-
+    
     % Set local defaults here
     localdefaults.minstepsize = 1e-10;
     localdefaults.maxiter = 1000;
@@ -109,9 +112,6 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
     end
     options = mergeOptions(localdefaults, options);
     
-    % Create a store database
-    storedb = struct();
-    
     timetic = tic();
     
     % If no initial point x is given by the user, generate one at random.
@@ -119,25 +119,25 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
         x = problem.M.rand();
     end
     
+    % Create a store database and get a key for the current x
+    storedb = StoreDB(options.storedepth);
+    key = storedb.getNewKey();
+    
     % Compute objective-related quantities for x
-    [cost grad storedb] = getCostGrad(problem, x, storedb);
+    [cost, grad] = getCostGrad(problem, x, storedb, key);
     gradnorm = problem.M.norm(x, grad);
     
-    % Iteration counter (at any point, iter is the number of fully executed
-    % iterations so far)
+    % Iteration counter.
+    % At any point, iter is the number of fully executed iterations so far.
     iter = 0;
     
-    % Save stats in a struct array info, and preallocate; see:
-    % http://people.csail.mit.edu/jskelly/blog/?x=entry:entry091030-033941
+    % Save stats in a struct array info, and preallocate.
     stats = savestats();
     info(1) = stats;
     info(min(10000, options.maxiter+1)).iter = [];
     
-    % Initial line search memory
-    lsmem = [];
-    
     if options.verbosity >= 2
-        fprintf(' iter\t                cost val\t     grad. norm\n');
+        fprintf(' iter\t               cost val\t    grad. norm\n');
     end
     
     % Start iterating until stopping criterion triggers
@@ -152,13 +152,15 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
         timetic = tic();
         
         % Run standard stopping criterion checks
-        [stop reason] = stoppingcriterion(problem, x, options, ...
+        [stop, reason] = stoppingcriterion(problem, x, options, ...
                                                              info, iter+1);
         
         % If none triggered, run specific stopping criterion check
         if ~stop && stats.stepsize < options.minstepsize
             stop = true;
-            reason = 'Last stepsize smaller than minimum allowed. See options.minstepsize.';
+            reason = sprintf(['Last stepsize smaller than minimum '  ...
+                              'allowed; options.minstepsize = %g.'], ...
+                              options.minstepsize);
         end
     
         if stop
@@ -172,19 +174,20 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
         desc_dir = problem.M.lincomb(x, -1, grad);
         
         % Execute the line search
-        [stepsize newx storedb lsmem lsstats] = options.linesearch( ...
-                      problem, x, desc_dir, cost, -gradnorm^2, ...
-                      options, storedb, lsmem);
+        [stepsize, newx, newkey, lsstats] = options.linesearch( ...
+                             problem, x, desc_dir, cost, -gradnorm^2, ...
+                             options, storedb, key);
         
         % Compute the new cost-related quantities for x
-        [newcost newgrad storedb] = getCostGrad(problem, newx, storedb);
+        [newcost, newgrad] = getCostGrad(problem, newx, storedb, newkey);
         newgradnorm = problem.M.norm(newx, newgrad);
         
         % Make sure we don't use too much memory for the store database
-        storedb = purgeStoredb(storedb, options.storedepth);
+        storedb.purge();
         
-        % Update iterate info
+        % Transfer iterate info
         x = newx;
+        key = newkey;
         cost = newcost;
         grad = newgrad;
         gradnorm = newgradnorm;
@@ -222,7 +225,7 @@ function [x, cost, info, options] = steepestdescent(problem, x, options)
             stats.time = info(iter).time + toc(timetic);
             stats.linesearch = lsstats;
         end
-        stats = applyStatsfun(problem, x, storedb, options, stats);
+        stats = applyStatsfun(problem, x, storedb, key, options, stats);
     end
     
 end

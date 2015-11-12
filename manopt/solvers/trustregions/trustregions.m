@@ -104,21 +104,30 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 %       Initial trust-region radius. If you observe a long plateau at the
 %       beginning of the convergence plot (gradient norm VS iteration), it
 %       may pay off to try to tune this parameter to shorten the plateau.
-%       You should not set this parameter without setting Delta_bar.
+%       You should not set this parameter without setting Delta_bar too (at
+%       a larger value).
 %	useRand (false)
 %       Set to true if the trust-region solve is to be initiated with a
 %       random tangent vector. If set to true, no preconditioner will be
 %       used. This option is set to true in some scenarios to escape saddle
 %       points, but is otherwise seldom activated.
 %	kappa (0.1)
-%       Inner kappa convergence tolerance.
+%       tCG inner kappa convergence tolerance.
+%       kappa > 0 is the linear convergence target rate: tCG will terminate
+%       early if the residual was reduced by a factor of kappa.
 %	theta (1.0)
-%       Inner theta convergence tolerance.
+%       tCG inner theta convergence tolerance.
+%       1+theta (theta between 0 and 1) is the superlinear convergence
+%       target rate. tCG will terminate early if the residual was reduced
+%       by a power of 1+theta.
 %	rho_prime (0.1)
-%       Accept/reject ratio : if rho is at least rho_prime, the outer
+%       Accept/reject threshold : if rho is at least rho_prime, the outer
 %       iteration is accepted. Otherwise, it is rejected. In case it is
 %       rejected, the trust-region radius will have been decreased.
-%       To ensure this, rho_prime must be strictly smaller than 1/4.
+%       To ensure this, rho_prime >= 0 must be strictly smaller than 1/4.
+%       If rho_prime is negative, the algorithm is not guaranteed to
+%       produce monotonically decreasing cost values. It is strongly
+%       recommended to set rho_prime > 0, to aid convergence.
 %   rho_regularization (1e3)
 %       Close to convergence, evaluating the performance ratio rho is
 %       numerically challenging. Meanwhile, close to convergence, the
@@ -126,6 +135,10 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 %       accepted. Regularization lets rho go to 1 as the model decrease and
 %       the actual decrease go to zero. Set this option to zero to disable
 %       regularization (not recommended). See in-code for the specifics.
+%       When this is not zero, it may happen that the iterates produced are
+%       not monotonically improving the cost when very close to
+%       convergence. This is because the corrected cost improvement could
+%       change sign if it is negative but very small.
 %   statsfun (none)
 %       Function handle to a function that will be called after each
 %       iteration to provide the opportunity to log additional statistics.
@@ -148,7 +161,8 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 %       computations for debugging purposes. If a debugging test fails, you
 %       will be informed of it, usually via the command window. Be aware
 %       that these additional computations appear in the algorithm timings
-%       too.
+%       too, and may interfere with operations such as counting the number
+%       of cost evaluations, etc. (the debug calls get storedb too).
 %   storedepth (20)
 %       Maximum number of different points x of the manifold for which a
 %       store structure will be kept in memory in the storedb. If the
@@ -164,12 +178,49 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 % the store structure containing everything that was computed at that point
 % (possibly including previous rejects at that same point). Hence, statsfun
 % should not be used in conjunction with the store to count operations for
-% example. Instead, you could use a global variable and increment that
-% variable directly from the cost related functions. It is however possible
-% to use statsfun with the store to compute, for example, alternate merit
-% functions on the point x.
+% example. Instead, you should use storedb's shared memory for such
+% purposes (either via storedb.shared, or via store.shared, see
+% online documentation). It is however possible to use statsfun with the
+% store to compute, for example, other merit functions on the point x
+% (other than the actual cost function, that is).
+%
+%
+% Please cite the Manopt paper as well as the research paper:
+%     @Article{genrtr,
+%       Title    = {Trust-region methods on {Riemannian} manifolds},
+%       Author   = {Absil, P.-A. and Baker, C. G. and Gallivan, K. A.},
+%       Journal  = {Foundations of Computational Mathematics},
+%       Year     = {2007},
+%       Number   = {3},
+%       Pages    = {303--330},
+%       Volume   = {7},
+%       Doi      = {10.1007/s10208-005-0179-9}
+%     }
 %
 % See also: steepestdescent conjugategradient manopt/examples
+
+% An explicit, general listing of this algorithm, with preconditioning,
+% can be found in the following paper:
+%     @Article{boumal2015lowrank,
+%       Title   = {Low-rank matrix completion via preconditioned optimization on the {G}rassmann manifold},
+%       Author  = {Boumal, N. and Absil, P.-A.},
+%       Journal = {Linear Algebra and its Applications},
+%       Year    = {2015},
+%       Pages   = {200--239},
+%       Volume  = {475},
+%       Doi     = {10.1016/j.laa.2015.02.027},
+%     }
+
+% When the Hessian is not specified, it is approximated with
+% finite-differences of the gradient. The resulting method is called
+% RTR-FD. Some convergence theory for it is available in this paper:
+% @incollection{boumal2015rtrfd
+% 	author={Boumal, N.},
+% 	title={Riemannian trust regions with finite-difference Hessian approximations are globally convergent},
+% 	year={2015},
+% 	booktitle={Geometric Science of Information}
+% }
+
 
 % This file is part of Manopt: www.manopt.org.
 % This code is an adaptation to Manopt of the original GenRTR code:
@@ -180,6 +231,7 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 % (http://www.math.fsu.edu/~cbaker/GenRTR/?page=download)
 % See accompanying license file.
 % The adaptation was executed by Nicolas Boumal.
+%
 %
 % Change log: 
 %
@@ -215,6 +267,10 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 %       operator, which is the case for finite difference approximations).
 %       When such an anomaly is detected, the step is rejected and the
 %       trust region radius is decreased.
+%       Feb. 18, 2015 note: this is less useful now, as tCG now guarantees
+%       model decrease even for the finite difference approximation of the
+%       Hessian. It is still useful in case of numerical errors, but this
+%       is less stringent.
 %
 %   NB Dec. 3, 2013:
 %       The stepsize is now registered at each iteration, at a small
@@ -223,6 +279,17 @@ function [x, cost, info, options] = trustregions(problem, x, options)
 %       Delta0 accordingly. In Manopt 1.0.4, the defaults for these options
 %       were not treated appropriately because of an incorrect use of the
 %       isfield() built-in function.
+%
+%   NB Feb. 18, 2015:
+%       Added some comments. Also, Octave now supports safe tic/toc usage,
+%       so we reverted the changes to use that again (see Aug. 22, 2013 log
+%       entry).
+%
+%   NB April 3, 2015:
+%       Works with the new StoreDB class system.
+%
+%   NB April 8, 2015:
+%       No Hessian warning if approximate Hessian explicitly available.
 
 
 % Verify that the problem description is sufficient for the solver.
@@ -232,19 +299,24 @@ if ~canGetCost(problem)
 end
 if ~canGetGradient(problem)
     warning('manopt:getGradient', ...
-            'No gradient provided. The algorithm will likely abort.');    
+            'No gradient provided. The algorithm will likely abort.');
 end
-if ~canGetHessian(problem)
+if ~canGetHessian(problem) && ~canGetApproxHessian(problem)
+    % Note: we do not give a warning if an approximate Hessian is
+    % explicitly given in the problem description, as in that case the user
+    % seems to be aware of the issue.
     warning('manopt:getHessian:approx', ...
-            'No Hessian provided. Using an approximation instead.');
+           ['No Hessian provided. Using an FD approximation instead.\n' ...
+            'To disable this warning: warning(''off'', ''manopt:getHessian:approx'')']);
+    problem.approxhess = approxhessianFD(problem);
 end
 
 % Define some strings for display
 tcg_stop_reason = {'negative curvature',...
                    'exceeded trust region',...
-                   'reached target residual-kappa',...
-                   'reached target residual-theta',...
-                   'dimension exceeded',...
+                   'reached target residual-kappa (linear)',...
+                   'reached target residual-theta (superlinear)',...
+                   'maximum inner iterations',...
                    'model increased'};
 
 % Set local defaults here
@@ -295,15 +367,16 @@ if options.verbosity >= 3
     disp(options);
 end
 
-% Create a store database
-storedb = struct();
-
-tic();
+ticstart = tic();
 
 % If no initial point x is given by the user, generate one at random.
 if ~exist('x', 'var') || isempty(x)
     x = problem.M.rand();
 end
+
+% Create a store database and get a key for the current x
+storedb = StoreDB(options.storedepth);
+key = storedb.getNewKey();
 
 %% Initializations
 
@@ -311,34 +384,38 @@ end
 % number of iterations fully executed so far.
 k = 0;
 
-% initialize solution and companion measures: f(x), fgrad(x)
-[fx fgradx storedb] = getCostGrad(problem, x, storedb);
+% Initialize solution and companion measures: f(x), fgrad(x)
+[fx, fgradx] = getCostGrad(problem, x, storedb, key);
 norm_grad = problem.M.norm(x, fgradx);
 
-% initialize trust-region radius
+% Initialize trust-region radius
 Delta = options.Delta0;
 
-% Save stats in a struct array info, and preallocate
-% (see http://people.csail.mit.edu/jskelly/blog/?x=entry:entry091030-033941)
+% Save stats in a struct array info, and preallocate.
 if ~exist('used_cauchy', 'var')
     used_cauchy = [];
 end
-stats = savestats(problem, x, storedb, options, k, fx, norm_grad, Delta);
+stats = savestats(problem, x, storedb, key, options, k, fx, norm_grad, Delta, ticstart);
 info(1) = stats;
 info(min(10000, options.maxiter+1)).iter = [];
 
 % ** Display:
 if options.verbosity == 2
    fprintf(['%3s %3s      %5s                %5s     ',...
-            'f: %e   |grad|: %e\n'],...
+            'f: %+e   |grad|: %e\n'],...
            '   ','   ','     ','     ', fx, norm_grad);
 elseif options.verbosity > 2
    fprintf('************************************************************************\n');
    fprintf('%3s %3s    k: %5s     num_inner: %5s     %s\n',...
            '','','______','______','');
-   fprintf('       f(x) : %e       |grad| : %e\n', fx, norm_grad);
+   fprintf('       f(x) : %+e       |grad| : %e\n', fx, norm_grad);
    fprintf('      Delta : %f\n', Delta);
 end
+
+% To keep track of consecutive radius changes, so that we can warn the
+% user if it appears necessary.
+consecutive_TRplus = 0;
+consecutive_TRminus = 0;
 
 
 % **********************
@@ -347,10 +424,10 @@ end
 while true
     
 	% Start clock for this outer iteration
-    tic();
+    ticstart = tic();
 
     % Run standard stopping criterion checks
-    [stop reason] = stoppingcriterion(problem, x, options, info, k+1);
+    [stop, reason] = stoppingcriterion(problem, x, options, info, k+1);
     
     % If the stopping criterion that triggered is the tolerance on the
     % gradient norm but we are using randomization, make sure we make at
@@ -388,30 +465,20 @@ while true
         end
     end
 
-    % solve TR subproblem
-    [eta Heta numit stop_inner storedb] = ...
-                     tCG(problem, x, fgradx, eta, Delta, options, storedb);
+    % Solve TR subproblem approximately
+    [eta, Heta, numit, stop_inner] = ...
+                tCG(problem, x, fgradx, eta, Delta, options, storedb, key);
     srstr = tcg_stop_reason{stop_inner};
-    
-    % This is only computed for logging purposes, because it may be useful
-    % for some user-defined stopping criteria. If this is not cheap for
-    % specific application (compared to evaluating the cost), we should
-    % reconsider this.
-    norm_eta = problem.M.norm(x, eta);
-    
-    if options.debug > 0
-        testangle = problem.M.inner(x, eta, fgradx) / (norm_eta*norm_grad);
-    end
 
     % If using randomized approach, compare result with the Cauchy point.
-    % Convergence proofs assume that we achieve at least the reduction of
-    % the Cauchy point. After this if-block, either all eta-related
-    % quantities have been changed consistently, or none of them have
-    % changed.
+    % Convergence proofs assume that we achieve at least (a fraction of)
+    % the reduction of the Cauchy point. After this if-block, either all
+    % eta-related quantities have been changed consistently, or none of
+    % them have changed.
     if options.useRand
         used_cauchy = false;
         % Check the curvature,
-        [Hg storedb] = getHessian(problem, x, fgradx, storedb);
+        Hg = getHessian(problem, x, fgradx, storedb, key);
         g_Hg = problem.M.inner(x, fgradx, Hg);
         if g_Hg <= 0
             tau_c = 1;
@@ -428,24 +495,40 @@ while true
                    + .5*problem.M.inner(x, Heta,   eta);
         mdlec = fx + problem.M.inner(x, fgradx, eta_c) ...
                    + .5*problem.M.inner(x, Heta_c, eta_c);
-        if mdle > mdlec
+        if mdlec < mdle
             eta = eta_c;
             Heta = Heta_c; % added April 11, 2012
             used_cauchy = true;
         end
-    end 
+    end
+    
+    
+    % This is only computed for logging purposes, because it may be useful
+    % for some user-defined stopping criteria. If this is not cheap for
+    % specific applications (compared to evaluating the cost), we should
+    % reconsider this.
+    norm_eta = problem.M.norm(x, eta);
+    
+    if options.debug > 0
+        testangle = problem.M.inner(x, eta, fgradx) / (norm_eta*norm_grad);
+    end
+    
 
-	% Compute the retraction of the proposal
+	% Compute the tentative next iterate (the proposal)
 	x_prop  = problem.M.retr(x, eta);
+    key_prop = storedb.getNewKey();
 
 	% Compute the function value of the proposal
-	[fx_prop storedb] = getCost(problem, x_prop, storedb);
+	fx_prop = getCost(problem, x_prop, storedb, key_prop);
 
-	% Will we accept the proposed solution or not?
+	% Will we accept the proposal or not?
     % Check the performance of the quadratic model against the actual cost.
     rhonum = fx - fx_prop;
     rhoden = -problem.M.inner(x, fgradx, eta) ...
              -.5*problem.M.inner(x, eta, Heta);
+    % rhonum could be anything.
+    % rhoden should be nonnegative, as guaranteed by tCG, baring numerical
+    % errors.
     
     % Heuristic -- added Dec. 2, 2013 (NB) to replace the former heuristic.
     % This heuristic is documented in the book by Conn Gould and Toint on
@@ -455,7 +538,7 @@ while true
     % that computing their difference is numerically challenging: there may
     % be a significant loss in accuracy. Since the acceptance or rejection
     % of the step is conditioned on the ratio between rhonum and rhoden,
-    % large errors in rhonum result in a large error in rho, hence in
+    % large errors in rhonum result in a very large error in rho, hence in
     % erratic acceptance / rejection. Meanwhile, close to convergence,
     % steps are usually trustworthy and we should transition to a Newton-
     % like method, with rho=1 consistently. The heuristic thus shifts both
@@ -490,6 +573,16 @@ while true
     % the regularization is supposed to capture the accuracy to which
     % rhoden is computed: if rhoden were negative before regularization but
     % not after, that should not be (and is not) detected as a failure.
+    % 
+    % Note (Feb. 17, 2015, NB): the most recent version of tCG already
+    % includes a mechanism to ensure model decrease if the Cauchy step
+    % attained a decrease (which is theoretically the case under very lax
+    % assumptions). This being said, it is always possible that numerical
+    % errors will prevent this, so that it is good to keep a safeguard.
+    %
+    % The current strategy is that, if this should happen, then we reject
+    % the step and reduce the trust region radius. This also ensures that
+    % the actual cost values are monotonically decreasing.
     model_decreased = (rhoden >= 0);
     
     if ~model_decreased 
@@ -497,15 +590,29 @@ while true
     end
     
     rho = rhonum / rhoden;
+    
+    % Added June 30, 2015 following observation by BM.
+    % With this modification, it is guaranteed that a step rejection is
+    % always accompanied by a TR reduction. This prevents stagnation in
+    % this "corner case" (NaN's really aren't supposed to occur, but it's
+    % nice if we can handle them nonetheless).
+    if isnan(rho)
+        fprintf('rho is NaN! Forcing a radius decrease. This should not happen.\n');
+        if isnan(fx_prop)
+            fprintf('The cost function returned NaN (perhaps the retraction returned a bad point?)\n');
+        else
+            fprintf('The cost function did not return a NaN value.');
+        end
+    end
    
     if options.debug > 0
         m = @(x, eta) ...
-          getCost(problem, x, storedb) + ...
-          getDirectionalDerivative(problem, x, eta, storedb) + ...
-          .5*problem.M.inner(x, getHessian(problem, x, eta, storedb), eta);
+          getCost(problem, x, storedb, key) + ...
+          getDirectionalDerivative(problem, x, eta, storedb, key) + ...
+          .5*problem.M.inner(x, getHessian(problem, x, eta, storedb, key), eta);
         zerovec = problem.M.zerovec(x);
         actrho = (fx - fx_prop) / (m(x, zerovec) - m(x, eta));
-        fprintf('DBG:   new f(x) : %e\n', fx_prop);
+        fprintf('DBG:   new f(x) : %+e\n', fx_prop);
         fprintf('DBG: actual rho : %e\n', actrho);
         fprintf('DBG:   used rho : %e\n', rho);
     end
@@ -514,25 +621,48 @@ while true
     trstr = '   ';
     % If the actual decrease is smaller than 1/4 of the predicted decrease,
     % then reduce the TR radius.
-    if rho < 1/4 || ~model_decreased
+    if rho < 1/4 || ~model_decreased || isnan(rho)
         trstr = 'TR-';
         Delta = Delta/4;
+        consecutive_TRplus = 0;
+        consecutive_TRminus = consecutive_TRminus + 1;
+        if consecutive_TRminus >= 5 && options.verbosity >= 1
+            consecutive_TRminus = -inf;
+            fprintf(' +++ Detected many consecutive TR- (radius decreases).\n');
+            fprintf(' +++ Consider decreasing options.Delta_bar by an order of magnitude.\n');
+            fprintf(' +++ Current values: options.Delta_bar = %g and options.Delta0 = %g.\n', options.Delta_bar, options.Delta0);
+        end
     % If the actual decrease is at least 3/4 of the precicted decrease and
     % the tCG (inner solve) hit the TR boundary, increase the TR radius.
+    % We also keep track of the number of consecutive trust-region radius
+    % increases. If there are many, this may indicate the need to adapt the
+    % initial and maximum radii.
     elseif rho > 3/4 && (stop_inner == 1 || stop_inner == 2)
         trstr = 'TR+';
         Delta = min(2*Delta, options.Delta_bar);
+        consecutive_TRminus = 0;
+        consecutive_TRplus = consecutive_TRplus + 1;
+        if consecutive_TRplus >= 5 && options.verbosity >= 1
+            consecutive_TRplus = -inf;
+            fprintf(' +++ Detected many consecutive TR+ (radius increases).\n');
+            fprintf(' +++ Consider increasing options.Delta_bar by an order of magnitude.\n');
+            fprintf(' +++ Current values: options.Delta_bar = %g and options.Delta0 = %g.\n', options.Delta_bar, options.Delta0);
+        end
+    else
+        % Otherwise, keep the TR radius constant.
+        consecutive_TRplus = 0;
+        consecutive_TRminus = 0;
     end
-    % Otherwise, keep the TR radius constant.
 
     % Choose to accept or reject the proposed step based on the model
-    % performance.
+    % performance. Note the strict inequality.
     if model_decreased && rho > options.rho_prime
         accept = true;
         accstr = 'acc';
         x = x_prop;
+        key = key_prop;
         fx = fx_prop;
-        [fgradx storedb] = getGradient(problem, x, storedb);
+        fgradx = getGradient(problem, x, storedb, key);
         norm_grad = problem.M.norm(x, fgradx);
     else
         accept = false;
@@ -541,23 +671,23 @@ while true
     
     
     % Make sure we don't use too much memory for the store database
-    storedb = purgeStoredb(storedb, options.storedepth);
+    storedb.purge();
     
     % k is the number of iterations we have accomplished.
     k = k + 1;
 
     % Log statistics for freshly executed iteration.
     % Everything after this in the loop is not accounted for in the timing.
-    stats = savestats(problem, x, storedb, options, k, fx, norm_grad, ...
-                      Delta, info, rho, rhonum, rhoden, accept, numit, ...
-                      norm_eta, used_cauchy);
+    stats = savestats(problem, x, storedb, key, options, k, fx, ...
+                      norm_grad, Delta, ticstart, info, rho, rhonum, ...
+                      rhoden, accept, numit, norm_eta, used_cauchy);
     info(k+1) = stats; %#ok<AGROW>
 
     
     % ** Display:
     if options.verbosity == 2,
         fprintf(['%3s %3s   k: %5d     num_inner: %5d     ', ...
-        'f: %e   |grad|: %e   %s\n'], ...
+        'f: %+e   |grad|: %e   %s\n'], ...
         accstr,trstr,k,numit,fx,norm_grad,srstr);
     elseif options.verbosity > 2,
         if options.useRand && used_cauchy,
@@ -565,7 +695,7 @@ while true
         end
 		fprintf('%3s %3s    k: %5d     num_inner: %5d     %s\n', ...
 				accstr, trstr, k, numit, srstr);
-		fprintf('       f(x) : %e     |grad| : %e\n',fx,norm_grad);
+		fprintf('       f(x) : %+e     |grad| : %e\n',fx,norm_grad);
 		if options.debug > 0
 			fprintf('      Delta : %f          |eta| : %e\n',Delta,norm_eta);
 		end
@@ -601,15 +731,15 @@ end
     
 
 % Routine in charge of collecting the current iteration stats
-function stats = savestats(problem, x, storedb, options, k, fx, ...
-                           norm_grad, Delta, info, rho, rhonum, ...
+function stats = savestats(problem, x, storedb, key, options, k, fx, ...
+                           norm_grad, Delta, ticstart, info, rho, rhonum, ...
                            rhoden, accept, numit, norm_eta, used_cauchy)
     stats.iter = k;
     stats.cost = fx;
     stats.gradnorm = norm_grad;
     stats.Delta = Delta;
     if k == 0
-        stats.time = toc();
+        stats.time = toc(ticstart);
         stats.rho = inf;
         stats.rhonum = NaN;
         stats.rhoden = NaN;
@@ -620,7 +750,7 @@ function stats = savestats(problem, x, storedb, options, k, fx, ...
             stats.cauchy = false;
         end
     else
-        stats.time = info(k).time + toc();
+        stats.time = info(k).time + toc(ticstart);
         stats.rho = rho;
         stats.rhonum = rhonum;
         stats.rhoden = rhoden;
@@ -635,6 +765,6 @@ function stats = savestats(problem, x, storedb, options, k, fx, ...
     % See comment about statsfun above: the x and store passed to statsfun
     % are that of the most recently accepted point after the iteration
     % fully executed.
-    stats = applyStatsfun(problem, x, storedb, options, stats);
+    stats = applyStatsfun(problem, x, storedb, key, options, stats);
     
 end

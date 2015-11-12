@@ -11,9 +11,6 @@ function [x, cost, info, options] = conjugategradient(problem, x, options)
 % (otherwise, at a random point on the manifold). To specify options whilst
 % not specifying an initial guess, give x0 as [] (the empty matrix).
 %
-% In most of the examples bundled with the toolbox (see link below), the
-% solver can be replaced by the present one if need be.
-%
 % The outputs x and cost are the best reached point on the manifold and its
 % cost. The struct-array info contains information about the iterations:
 %   iter : the iteration number (0 for the initial guess)
@@ -72,7 +69,7 @@ function [x, cost, info, options] = conjugategradient(problem, x, options)
 %       each line search's documentation for info. Another available line
 %       search in manopt is @linesearch, in /manopt/linesearch/linesearch.m
 %       If the problem structure includes a line search hint, then the
-%       default line search used in @linesearch_hint.
+%       default line search used is @linesearch_hint.
 %   statsfun (none)
 %       Function handle to a function that will be called after each
 %       iteration to provide the opportunity to log additional statistics.
@@ -94,7 +91,22 @@ function [x, cost, info, options] = conjugategradient(problem, x, options)
 %       the CG algorithm, a store depth of 2 should always be sufficient.
 %
 %
+% In most of the examples bundled with the toolbox (see link below), the
+% solver can be replaced by the present one if need be.
+%
 % See also: steepestdescent trustregions manopt/solvers/linesearch manopt/examples
+
+% An explicit, general listing of this algorithm, with preconditioning,
+% can be found in the following paper:
+%     @Article{boumal2015lowrank,
+%       Title   = {Low-rank matrix completion via preconditioned optimization on the {G}rassmann manifold},
+%       Author  = {Boumal, N. and Absil, P.-A.},
+%       Journal = {Linear Algebra and its Applications},
+%       Year    = {2015},
+%       Pages   = {200--239},
+%       Volume  = {475},
+%       Doi     = {10.1016/j.laa.2015.02.027},
+%     }
 
 % This file is part of Manopt: www.manopt.org.
 % Original author: Bamdev Mishra, Dec. 30, 2012.
@@ -109,8 +121,8 @@ function [x, cost, info, options] = conjugategradient(problem, x, options)
 %       Now logging beta parameter too.
 %    
 %	Nov. 7, 2013, NB:
-%       The search direction is not normalized before it is passed to the
-%       linesearch anymore. This way, it is up to the designers of the
+%       The search direction is no longer normalized before it is passed
+%       to the linesearch. This way, it is up to the designers of the
 %       linesearch to decide whether they want to use the norm of the
 %       search direction in their algorithm or not. There are reasons
 %       against it, but practical evidence that it may help too, so we
@@ -122,7 +134,9 @@ function [x, cost, info, options] = conjugategradient(problem, x, options)
 %       Documentation improved: options are now explicitly described.
 %       Removed the Daniel rule for beta: it was not appropriate for
 %       preconditioned CG and I could not find a proper reference for it.
-
+%
+%   April 3, 2015 (NB):
+%       Works with the new StoreDB class system.
 
 % Verify that the problem description is sufficient for the solver.
 if ~canGetCost(problem)
@@ -138,11 +152,11 @@ end
 localdefaults.minstepsize = 1e-10;
 localdefaults.maxiter = 1000;
 localdefaults.tolgradnorm = 1e-6;
-localdefaults.storedepth = 2;
+localdefaults.storedepth = 20;
 % Changed by NB : H-S has the "auto restart" property.
 % See Hager-Zhang 2005/2006 survey about CG methods.
-% Well, the auto restart comes from the 'max(0, ...)', not so much from the
-% reason stated in Hager-Zhang I believe. P-R also has auto restart.
+% The auto restart comes from the 'max(0, ...)', not so much from the
+% reason stated in Hager-Zhang I think. P-R also has auto restart.
 localdefaults.beta_type = 'H-S';
 localdefaults.orth_value = Inf; % by BM as suggested in Nocedal and Wright
 
@@ -163,12 +177,9 @@ if ~exist('options', 'var') || isempty(options)
 end
 options = mergeOptions(localdefaults, options);
 
-% for convenience
+% For convenience
 inner = problem.M.inner;
 lincomb = problem.M.lincomb;
-
-% Create a store database
-storedb = struct();
 
 timetic = tic();
 
@@ -177,28 +188,28 @@ if ~exist('x', 'var') || isempty(x)
     x = problem.M.rand();
 end
 
-% Compute objective-related quantities for x
-[cost grad storedb] = getCostGrad(problem, x, storedb);
+% Create a store database and generate a key for the current x
+storedb = StoreDB(options.storedepth);
+key = storedb.getNewKey();
+
+% Compute cost-related quantities for x
+[cost, grad] = getCostGrad(problem, x, storedb, key);
 gradnorm = problem.M.norm(x, grad);
-[Pgrad storedb] = getPrecon(problem, x, grad, storedb);
+Pgrad = getPrecon(problem, x, grad, storedb, key);
 gradPgrad = inner(x, grad, Pgrad);
 
 % Iteration counter (at any point, iter is the number of fully executed
 % iterations so far)
 iter = 0;
 
-% Save stats in a struct array info and preallocate,
-% see http://people.csail.mit.edu/jskelly/blog/?x=entry:entry091030-033941
+% Save stats in a struct array info and preallocate.
 stats = savestats();
 info(1) = stats;
 info(min(10000, options.maxiter+1)).iter = [];
 
-% Initial linesearch memory
-lsmem = [];
-
 
 if options.verbosity >= 2
-    fprintf(' iter\t                cost val\t     grad. norm\n');
+    fprintf(' iter\t               cost val\t    grad. norm\n');
 end
 
 % Compute a first descent direction (not normalized)
@@ -217,12 +228,14 @@ while true
     timetic = tic();
     
     % Run standard stopping criterion checks
-    [stop reason] = stoppingcriterion(problem, x, options, info, iter+1);
+    [stop, reason] = stoppingcriterion(problem, x, options, info, iter+1);
     
     % Run specific stopping criterion check
     if ~stop && abs(stats.stepsize) < options.minstepsize
         stop = true;
-        reason = 'Last stepsize smaller than minimum allowed. See options.minstepsize.';
+        reason = sprintf(['Last stepsize smaller than minimum '  ...
+                          'allowed; options.minstepsize = %g.'], ...
+                          options.minstepsize);
     end
     
     if stop
@@ -256,14 +269,14 @@ while true
     
     
     % Execute line search
-    [stepsize newx storedb lsmem lsstats] = options.linesearch(...
-                 problem, x, desc_dir, cost, df0, options, storedb, lsmem);
-
+    [stepsize, newx, newkey, lsstats] = options.linesearch( ...
+                   problem, x, desc_dir, cost, df0, options, storedb, key);
+               
     
-    % Compute the new cost-related quantities for x
-    [newcost newgrad storedb] = getCostGrad(problem, newx, storedb);
+    % Compute the new cost-related quantities for newx
+    [newcost, newgrad] = getCostGrad(problem, newx, storedb, newkey);
     newgradnorm = problem.M.norm(newx, newgrad);
-    [Pnewgrad storedb] = getPrecon(problem, x, newgrad, storedb);
+    Pnewgrad = getPrecon(problem, newx, newgrad, storedb, newkey);
     newgradPnewgrad = inner(newx, newgrad, Pnewgrad);
     
     
@@ -283,7 +296,7 @@ while true
     else
         
         oldgrad = problem.M.transp(x, newx, grad);
-        orth_grads = inner(newx, oldgrad, Pnewgrad)/newgradPnewgrad;
+        orth_grads = inner(newx, oldgrad, Pnewgrad) / newgradPnewgrad;
         
         % Powell's restart strategy (see page 12 of Hager and Zhang's
         % survey on conjugate gradient methods, for example)
@@ -295,51 +308,56 @@ while true
             
             desc_dir = problem.M.transp(x, newx, desc_dir);
             
-            if strcmp(options.beta_type, 'F-R')  % Fletcher-Reeves
-                beta = newgradPnewgrad / gradPgrad;
+            switch upper(options.beta_type)
+            
+                case 'F-R'  % Fletcher-Reeves
+                    beta = newgradPnewgrad / gradPgrad;
                 
-            elseif strcmp(options.beta_type, 'P-R')  % Polak-Ribiere+
-                % vector grad(new) - transported grad(current)
-                diff = lincomb(newx, 1, newgrad, -1, oldgrad);
-                ip_diff = inner(newx, Pnewgrad, diff);
-                beta = ip_diff/gradPgrad;
-                beta = max(0, beta);
+                case 'P-R'  % Polak-Ribiere+
+                    % vector grad(new) - transported grad(current)
+                    diff = lincomb(newx, 1, newgrad, -1, oldgrad);
+                    ip_diff = inner(newx, Pnewgrad, diff);
+                    beta = ip_diff / gradPgrad;
+                    beta = max(0, beta);
                 
-            elseif strcmp(options.beta_type, 'H-S')  % Hestenes-Stiefel+
-                diff = lincomb(newx, 1, newgrad, -1, oldgrad);
-                ip_diff = inner(newx, Pnewgrad, diff);
-                beta = ip_diff / inner(newx, diff, desc_dir);
-                beta = max(0, beta);
+                case 'H-S'  % Hestenes-Stiefel+
+                    diff = lincomb(newx, 1, newgrad, -1, oldgrad);
+                    ip_diff = inner(newx, Pnewgrad, diff);
+                    beta = ip_diff / inner(newx, diff, desc_dir);
+                    beta = max(0, beta);
 
-            elseif strcmp(options.beta_type, 'H-Z') % Hager-Zhang+
-                diff = lincomb(newx, 1, newgrad, -1, oldgrad);
-                Poldgrad = problem.M.transp(x, newx, Pgrad);
-                Pdiff = lincomb(newx, 1, Pnewgrad, -1, Poldgrad);
-                deno = inner(newx, diff, desc_dir);
-                numo = inner(newx, diff, Pnewgrad);
-                numo = numo - 2*inner(newx, diff, Pdiff)*...
-                                       inner(newx, desc_dir, newgrad)/deno;
-                beta = numo/deno;
-                
-                % Robustness (see Hager-Zhang paper mentioned above)
-                desc_dir_norm = problem.M.norm(newx, desc_dir);
-                eta_HZ = -1/(desc_dir_norm * min(0.01, gradnorm));
-                beta = max(beta,  eta_HZ);
+                case 'H-Z' % Hager-Zhang+
+                    diff = lincomb(newx, 1, newgrad, -1, oldgrad);
+                    Poldgrad = problem.M.transp(x, newx, Pgrad);
+                    Pdiff = lincomb(newx, 1, Pnewgrad, -1, Poldgrad);
+                    deno = inner(newx, diff, desc_dir);
+                    numo = inner(newx, diff, Pnewgrad);
+                    numo = numo - 2*inner(newx, diff, Pdiff)*...
+                                     inner(newx, desc_dir, newgrad) / deno;
+                    beta = numo / deno;
 
-            else
-                error(['Unknown options.beta_type. ' ...
-                       'Should be steep, S-D, F-R, P-R, H-S or H-Z.']);
+                    % Robustness (see Hager-Zhang paper mentioned above)
+                    desc_dir_norm = problem.M.norm(newx, desc_dir);
+                    eta_HZ = -1 / ( desc_dir_norm * min(0.01, gradnorm) );
+                    beta = max(beta, eta_HZ);
+
+                otherwise
+                    error(['Unknown options.beta_type. ' ...
+                           'Should be steep, S-D, F-R, P-R, H-S or H-Z.']);
             end
+            
             desc_dir = lincomb(newx, -1, Pnewgrad, beta, desc_dir);
+        
         end
         
     end
     
-    % Make sure we don't use too much memory for the store database.
-    storedb = purgeStoredb(storedb, options.storedepth);
+    % Make sure we don't use too much memory for the store database
+    storedb.purge();
     
-    % Update iterate info
+    % Transfer iterate info
     x = newx;
+    key = newkey;
     cost = newcost;
     grad = newgrad;
     Pgrad = Pnewgrad;
@@ -364,23 +382,23 @@ end
 
 
 % Routine in charge of collecting the current iteration stats
-    function stats = savestats()
-        stats.iter = iter;
-        stats.cost = cost;
-        stats.gradnorm = gradnorm;
-        if iter == 0
-            stats.stepsize = nan;
-            stats.time = toc(timetic);
-            stats.linesearch = [];
-            stats.beta = 0;
-        else
-            stats.stepsize = stepsize;
-            stats.time = info(iter).time + toc(timetic);
-            stats.linesearch = lsstats;
-            stats.beta = beta;
-        end
-        stats = applyStatsfun(problem, x, storedb, options, stats);
+function stats = savestats()
+    stats.iter = iter;
+    stats.cost = cost;
+    stats.gradnorm = gradnorm;
+    if iter == 0
+        stats.stepsize = nan;
+        stats.time = toc(timetic);
+        stats.linesearch = [];
+        stats.beta = 0;
+    else
+        stats.stepsize = stepsize;
+        stats.time = info(iter).time + toc(timetic);
+        stats.linesearch = lsstats;
+        stats.beta = beta;
     end
+    stats = applyStatsfun(problem, x, storedb, key, options, stats);
+end
 
 end
 

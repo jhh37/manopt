@@ -3,20 +3,17 @@ function M = fixedrankfactory_3factors(m, n, k)
 %
 % function M = fixedrankfactory_3factors(m, n, k)
 %
-% Follows the polar quotient geometry described in the following paper:
-% G. Meyer, S. Bonnabel and R. Sepulchre,
+% The first-order geometry follows the balanced quotient geometry described 
+% in the paper, 
 % "Linear regression under fixed-rank constraints: a Riemannian approach",
-% ICML 2011.
+% G. Meyer, S. Bonnabel and R. Sepulchre, ICML 2011.
 %
-% Paper link: http://www.icml-2011.org/papers/350_icmlpaper.pdf
+% Paper link: http://www.icml-2011.org/papers/350_icmlpaper.pdf.
 %
-% Additional reference is
-%
-% B. Mishra, R. Meyer, S. Bonnabel and R. Sepulchre
+% The second-order geometry follows from the paper
 % "Fixed-rank matrix factorizations and Riemannian low-rank optimization",
-% arXiv, 2012.
-%
-% Paper link: http://arxiv.org/abs/1209.0430
+% B. Mishra, R. Meyer, S. Bonnabel and R. Sepulchre,
+% Computational Statistics, 29(3 - 4), pp. 591 - 621, 2014.
 %
 % A point X on the manifold is represented as a structure with three
 % fields: L, S and R. The matrices L (mxk) and R (nxk) are orthonormal,
@@ -25,6 +22,30 @@ function M = fixedrankfactory_3factors(m, n, k)
 %
 % Tangent vectors are represented as a structure with three fields: L, S
 % and R.
+%
+% 
+% For first-order geometry, please cite the Manopt paper as well as the research paper:
+%     @InProceedings{meyer2011linear,
+%       Title        = {Linear regression under fixed-rank constraints: a {R}iemannian approach},
+%       Author       = {Meyer, G. and Bonnabel, S. and Sepulchre, R.},
+%       Booktitle    = {{28th International Conference on Machine Learning}},
+%       Year         = {2011},
+%       Organization = {{ICML}}
+%     }
+% For second-order geometry, please cite the Manopt paper as well as the research paper:
+%     @Article{mishra2014fixedrank,
+%       Title   = {Fixed-rank matrix factorizations and {Riemannian} low-rank optimization},
+%       Author  = {Mishra, B. and Meyer, G. and Bonnabel, S. and Sepulchre, R.},
+%       Journal = {Computational Statistics},
+%       Year    = {2014},
+%       Number  = {3-4},
+%       Pages   = {591--621},
+%       Volume  = {29},
+%       Doi     = {10.1007/s00180-013-0464-z}
+%     }
+%
+%
+% See also fixedrankembeddedfactory fixedrankfactory_2factors fixedrankfactory_3factors_preconditioned
 
 % This file is part of Manopt: www.manopt.org.
 % Original author: Bamdev Mishra, Dec. 30, 2012.
@@ -51,20 +72,20 @@ function M = fixedrankfactory_3factors(m, n, k)
     stiefel_proj = @(L, H) H - L*symm(L'*H);
     
     M.egrad2rgrad = @egrad2rgrad;
-    function eta = egrad2rgrad(X, eta)
-        eta.L = stiefel_proj(X.L, eta.L);
-        eta.S = X.S*symm(eta.S)*X.S;
-        eta.R = stiefel_proj(X.R, eta.R);
+    function rgrad = egrad2rgrad(X, egrad)
+        rgrad.L = stiefel_proj(X.L, egrad.L);
+        rgrad.S = X.S*symm(egrad.S)*X.S;
+        rgrad.R = stiefel_proj(X.R, egrad.R);
     end
     
     
     M.ehess2rhess = @ehess2rhess;
     function Hess = ehess2rhess(X, egrad, ehess, eta)
         
-        % Riemannian gradient for the factor S
+        % Riemannian gradient for the factor S.
         rgrad.S = X.S*symm(egrad.S)*X.S;
         
-        % Directional derivatives of the Riemannian gradient
+        % Directional derivatives of the Riemannian gradient.
         Hess.L = ehess.L - eta.L*symm(X.L'*egrad.L);
         Hess.L = stiefel_proj(X.L, Hess.L);
         
@@ -73,22 +94,22 @@ function M = fixedrankfactory_3factors(m, n, k)
         
         Hess.S = X.S*symm(ehess.S)*X.S +  2*symm(eta.S*symm(egrad.S)*X.S);
         
-        % Correction factor for the non-constant metric on the factor S
+        % Correction factor for the non-constant metric on the factor S.
         Hess.S = Hess.S - symm(eta.S*(X.S\rgrad.S));
         
-        % Projection onto the horizontal space
+        % Projection onto the horizontal space.
         Hess = M.proj(X, Hess);
     end
     
     
     M.proj = @projection;
     function etaproj = projection(X, eta)
-        % First, projection onto the tangent space of the total sapce
+        % First, projection onto the tangent space of the total space.
         eta.L = stiefel_proj(X.L, eta.L);
         eta.R = stiefel_proj(X.R, eta.R);
         eta.S = symm(eta.S);
         
-        % Then, projection onto the horizontal space
+        % Then, projection onto the horizontal space.
         SS = X.S*X.S;
         AS = X.S*(skew(X.L'*eta.L) + skew(X.R'*eta.R) - 2*skew(X.S\eta.S))*X.S;
         omega = lyap(SS, -AS);
@@ -127,8 +148,8 @@ function M = fixedrankfactory_3factors(m, n, k)
     M.hash = @(X) ['z' hashmd5([X.L(:) ; X.S(:) ; X.R(:)])];
     
     M.rand = @random;
-    % Factors L and R live on Stiefel manifolds, hence we will reuse
-    % their random generator.
+    % Factors L and R are on Stiefel manifolds, hence we reuse
+    % their random generators.
     stiefelm = stiefelfactory(m, k);
     stiefeln = stiefelfactory(n, k);
     function X = random()
@@ -139,7 +160,7 @@ function M = fixedrankfactory_3factors(m, n, k)
     
     M.randvec = @randomvec;
     function eta = randomvec(X)
-        % A random vector on the horizontal space
+        % A random vector on the horizontal space.
         eta.L = randn(m, k);
         eta.R = randn(n, k);
         eta.S = randn(k, k);
@@ -157,7 +178,7 @@ function M = fixedrankfactory_3factors(m, n, k)
     
     M.transp = @(x1, x2, d) projection(x2, d);
     
-    % vec and mat are not isometries, because of the unusual inner metric.
+    % vec and mat are not isometries, because of the scaled inner metric.
     M.vec = @(X, U) [U.L(:) ; U.S(:); U.R(:)];
     M.mat = @(X, u) struct('L', reshape(u(1:(m*k)), m, k), ...
         'S', reshape(u((m*k+1): m*k + k*k), k, k), ...
@@ -166,7 +187,7 @@ function M = fixedrankfactory_3factors(m, n, k)
     
 end
 
-% Linear combination of tangent vectors
+% Linear combination of tangent vectors.
 function d = lincomb(x, a1, d1, a2, d2) %#ok<INLSL>
     
     if nargin == 3

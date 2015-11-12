@@ -5,11 +5,31 @@ function M = sympositivedefinitefactory(n)
 % function M = sympositivedefinitefactory(n)
 %
 % A point X on the manifold is represented as a symmetric positive definite
-% matrix X (nxn).
+% matrix X (nxn). Tangent vectors are symmetric matrices of the same size
+% (but not necessarily definite).
 %
-% The following material is referenced from Chapter 6 of the book:
-% Rajendra Bhatia, "Positive definite matrices",
-% Princeton University Press, 2007.
+% The Riemannian metric is the bi-invariant metric, described notably in
+% Chapter 6 of the 2007 book "Positive definite matrices"
+% by Rajendra Bhatia, Princeton University Press.
+%
+%
+% The retraction / exponential map involves expm (the matrix exponential).
+% If too large a vector is retracted / exponentiated (e.g., a solver tries
+% to make too big a step), this may result in NaN's in the returned point,
+% which most likely would lead to NaN's in the cost / gradient / ... and
+% will result in failure of the optimization. For trustregions, this can be
+% controlled by setting options.Delta0 and options.Delta_bar, to prevent
+% too large steps.
+%
+%
+% Note also that many of the functions involve solving linear systems in X
+% (a point on the manifold), taking matrix exponentals and logarithms, etc.
+% It could therefore be beneficial to do some precomputation on X (an
+% eigenvalue decomposition for example) and store both X and the
+% preprocessing in a structure. This would require modifying the present
+% factory to work with such structures to represent both points and tangent
+% vectors. We omit this in favor of simplicity, but it may be good to keep
+% this in mind if efficiency becomes an issue in your application.
 
 % This file is part of Manopt: www.manopt.org.
 % Original author: Bamdev Mishra, August 29, 2013.
@@ -30,6 +50,10 @@ function M = sympositivedefinitefactory(n)
 %       Implemented proper parallel transport from Sra and Hosseini (not
 %       used by default).
 %       Also added symmetrization in exp and log (to be sure).
+% 
+%   April 3, 2015 (NB):
+%       Replaced trace(A*B) by a faster equivalent that does not compute
+%       the whole product A*B, for inner product, norm and distance.
     
     symm = @(X) .5*(X+X');
     
@@ -37,18 +61,26 @@ function M = sympositivedefinitefactory(n)
     
     M.dim = @() n*(n+1)/2;
     
-    % Choice of the metric on the orthnormal space is motivated by the
+	% Helpers to avoid computing full matrices simply to extract their trace
+	vec     = @(A) A(:);
+	trinner = @(A, B) vec(A')'*vec(B);  % = trace(A*B)
+	trnorm  = @(A) sqrt(trinner(A, A)); % = sqrt(trace(A^2))
+	
+    % Choice of the metric on the orthonormal space is motivated by the
     % symmetry present in the space. The metric on the positive definite
     % cone is its natural bi-invariant metric.
-    M.inner = @(X, eta, zeta) trace( (X\eta) * (X\zeta) );
+	% The result is equal to: trace( (X\eta) * (X\zeta) )
+    M.inner = @(X, eta, zeta) trinner(X\eta, X\zeta);
     
     % Notice that X\eta is *not* symmetric in general.
-    M.norm = @(X, eta) sqrt(trace((X\eta)^2));
+	% The result is equal to: sqrt(trace((X\eta)^2))
+    % There should be no need to take the real part, but rounding errors
+    % may cause a small imaginary part to appear, so we discard it.
+    M.norm = @(X, eta) real(trnorm(X\eta));
     
-    % Same here: X\Y is not symmetric in general. There should be no need
-    % to take the real part, but rounding errors may cause a small
-    % imaginary part to appear, so we discard it.
-    M.dist = @(X, Y) sqrt(real(trace((logm(X\Y))^2)));
+    % Same here: X\Y is not symmetric in general.
+    % Same remark about taking the real part.
+    M.dist = @(X, Y) real(trnorm(real(logm(X\Y))));
     
     
     M.typicaldist = @() sqrt(n*(n+1)/2);
@@ -114,7 +146,7 @@ function M = sympositivedefinitefactory(n)
         eta = eta / nrm;
     end
     
-    M.lincomb = @lincomb;
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(X) zeros(n);
     
@@ -126,12 +158,12 @@ function M = sympositivedefinitefactory(n)
     M.transp = @(X1, X2, eta) eta;
     
     % For reference, a proper vector transport is given here, following
-    % work by Sra and Hosseini (2014), "Conic geometric optimisation on the
-    % manifold of positive definite matrices",
-    % http://arxiv.org/abs/1312.1039
+    % work by Sra and Hosseini: "Conic geometric optimisation on the
+    % manifold of positive definite matrices", to appear in SIAM J. Optim.
+    % in 2015; also available here: http://arxiv.org/abs/1312.1039
     % This will not be used by default. To force the use of this transport,
-    % call "M.transp = M.paralleltransp;" on your M returned by the present
-    % factory.
+    % execute "M.transp = M.paralleltransp;" on your M returned by the
+    % present factory.
     M.paralleltransp = @parallel_transport;
     function zeta = parallel_transport(X, Y, eta)
         E = sqrtm((Y/X));
@@ -144,15 +176,3 @@ function M = sympositivedefinitefactory(n)
     M.vecmatareisometries = @() false;
     
 end
-
-% Linear combination of tangent vectors
-function d = lincomb(X, a1, d1, a2, d2) %#ok<INUSL>
-    if nargin == 3
-        d = a1*d1;
-    elseif nargin == 5
-        d = a1*d1 + a2*d2;
-    else
-        error('Bad use of sympositivedefinitefactory.lincomb.');
-    end 
-end
-

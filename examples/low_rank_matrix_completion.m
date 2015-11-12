@@ -16,14 +16,14 @@ function low_rank_matrix_completion()
 % Note that the code is long because it showcases quite a few features of
 % Manopt: most of the code is optional.
 %
-% Input:  None. This example file generate random data.
+% Input:  None. This example file generates random data.
 % 
 % Output: None.
 
 % This file is part of Manopt and is copyrighted. See the license file.
 % 
 % Main author: Nicolas Boumal, July 15, 2014
-% Contributors:
+% Contributors: Bart Vandereycken
 % 
 % Change log:
 % 
@@ -176,7 +176,7 @@ function low_rank_matrix_completion()
     end
 
     % Notice that for this solver, the Hessian is not needed.
-    [Xcg, xcost, info, options] = conjugategradient(problem, X0);
+    [Xcg, xcost, info, options] = conjugategradient(problem, X0); %#ok<ASGLU>
     
     fprintf('Take a look at the options that CG used:\n');
     disp(options);
@@ -196,7 +196,7 @@ function low_rank_matrix_completion()
     % Remove the linesearch helper from the problem structure.
     problem = rmfield(problem, 'linesearch');
     
-    [Xcg, xcost, info, options] = conjugategradient(problem, X0);
+    [Xcg, xcost, info, options] = conjugategradient(problem, X0); %#ok<ASGLU>
     
     fprintf('Take a look at the options that CG used:\n');
     disp(options);

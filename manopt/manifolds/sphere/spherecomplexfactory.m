@@ -16,6 +16,13 @@ function M = spherecomplexfactory(n, m)
 % Original author: Nicolas Boumal, Dec. 30, 2012.
 % Contributors: 
 % Change log: 
+%
+%   Sep. 4, 2014 (NB):
+%       Added ehess2rhess.
+%   April 7, 2015 (NB):
+%       Added vec/mat pair (for use with hessianspectrum, for example).
+%   April 13, 2015 (NB):
+%       Added logarithm
 
     
     if ~exist('m', 'var')
@@ -34,7 +41,7 @@ function M = spherecomplexfactory(n, m)
     
     M.norm = @(x, d) norm(d, 'fro');
     
-    M.dist = @(x, y) acos(real(x(:)'*y(:)));
+    M.dist = @(x, y) real(acos(real(x(:)'*y(:))));
     
     M.typicaldist = @() pi;
     
@@ -44,6 +51,11 @@ function M = spherecomplexfactory(n, m)
     % Riemannian gradient amounts to an orthogonal projection.
 	M.egrad2rgrad = M.proj;
     
+	M.ehess2rhess = @ehess2rhess;
+	function rhess = ehess2rhess(x, egrad, ehess, u)
+        rhess = M.proj(x, ehess) - real((x(:)'*egrad(:)))*u;
+	end
+    
 	M.tangent = M.proj;
     
     M.exp = @exponential;
@@ -52,7 +64,13 @@ function M = spherecomplexfactory(n, m)
 
     M.log = @logarithm;
     function v = logarithm(x1, x2)
-        error('The logarithmic map is not yet implemented for this manifold.');
+        v = M.proj(x1, x2 - x1);
+        di = M.dist(x1, x2);
+        % If the two points are "far apart", correct the norm.
+        if di > 1e-6
+            nv = norm(v, 'fro');
+            v = v * (di / nv);
+        end
     end
     
     M.hash = @(x) ['z' hashmd5([real(x(:)) ; imag(x(:))])];
@@ -61,7 +79,7 @@ function M = spherecomplexfactory(n, m)
     
     M.randvec = @(x) randomvec(n, m, x);
     
-    M.lincomb = @lincomb;
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(x) zeros(n, m);
     
@@ -72,6 +90,11 @@ function M = spherecomplexfactory(n, m)
         y = x1+x2;
         y = y / norm(y, 'fro');
     end
+
+    mn = m*n;
+    M.vec = @(x, u_mat) [real(u_mat(:)) ; imag(u_mat(:))];
+    M.mat = @(x, u_vec) reshape(u_vec(1:mn), m, n) + 1i*reshape(u_vec((mn+1):end), m, n);
+    M.vecmatareisometries = @() true;
 
 end
 
@@ -86,11 +109,11 @@ function y = exponential(x, d, t)
     
     nrm_td = norm(td, 'fro');
     
-    if nrm_td > 1e-6
+    if nrm_td > 4.5e-8
         y = x*cos(nrm_td) + td*(sin(nrm_td)/nrm_td);
     else
-        % If the step is too small, to avoid dividing by nrm_td, we choose
-        % to approximate with this retraction-like step.
+        % If the step is too small to accurately evaluate sin(x)/x,
+        % then sin(x)/x is almost indistinguishable from 1.
         y = x + td;
         y = y / norm(y, 'fro');
     end
@@ -123,18 +146,5 @@ function d = randomvec(n, m, x)
     d = randn(n, m) + 1i*randn(n, m);
     d = reshape(d(:) - x(:)*(real(x(:)'*d(:))), n, m);
     d = d / norm(d, 'fro');
-
-end
-
-% Linear combination of tangent vectors
-function d = lincomb(x, a1, d1, a2, d2) %#ok<INUSL>
-
-    if nargin == 3
-        d = a1*d1;
-    elseif nargin == 5
-        d = a1*d1 + a2*d2;
-    else
-        error('Bad use of spherecomplex.lincomb.');
-    end
 
 end

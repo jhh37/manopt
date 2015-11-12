@@ -1,9 +1,9 @@
-function [stepsize, newx, storedb, lsmem, lsstats] = ...
-                linesearch(problem, x, d, f0, df0, options, storedb, lsmem)
+function [stepsize, newx, newkey, lsstats] = ...
+                  linesearch(problem, x, d, f0, df0, options, storedb, key)
 % Standard line-search algorithm (step size selection) for descent methods.
 %
-% function [stepsize, newx, storedb, lsmem, lsstats] = 
-%               linesearch(problem, x, d, f0, df0, options, storedb, lsmem)
+% function [stepsize, newx, newkey, lsstats] = 
+%                 linesearch(problem, x, d, f0, df0, options, storedb, key)
 %
 % Base line-search algorithm for descent methods, based on a simple
 % backtracking method. The search direction provided has to be a descent
@@ -16,9 +16,14 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 % the returned step size is independent of the norm of the search direction
 % vector d: only the direction of d is important.
 % 
-% Below, the step will be constructed as alpha*d, and the step size is the
-% norm of that vector, thus: stepsize = alpha*norm_d. The step is executed
-% by retracting the vector alpha*d from the current point x, giving newx.
+% Below, the step is constructed as alpha*d, and the step size is the norm
+% of that vector, thus: stepsize = alpha*norm_d. The step is executed by
+% retracting the vector alpha*d from the current point x, giving newx.
+%
+% This line-search may create and maintain a structure called lsmem inside
+% storedb.internal. This gives the linesearch the opportunity to remember
+% what happened in the previous calls. This is typically used to make a
+% first guess at the step size, based on previous events.
 %
 % Inputs
 %
@@ -28,27 +33,19 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 %  f0 : cost value at x
 %  df0 : directional derivative at x along d
 %  options : options structure (see in code for usage)
-%  storedb : store database structure for caching purposes
-%  lsmem : a special memory holder to give the linesearch the opportunity
-%          to "remember" what happened in the previous calls. See below.
+%  storedb : StoreDB object (handle class: passed by reference) for caching
+%  key : key associated to point x in storedb
+%
+%  options, storedb and key are optional.
 %
 % Outputs
 %
 %  stepsize : norm of the vector retracted to reach newx from x.
 %  newx : next iterate suggested by the line-search algorithm, such that
 %         the retraction at x of the vector alpha*d reaches newx.
-%  storedb : the (possibly updated) store database structure.
-%  lsmem : the (possibly updated) lsmem memory holder.
-%  lsstats : statistics about the line-search procedure (stepsize, number
-%            of trials etc).
-% 
-% About lsmem : It can be anything, and will typically be a matrix or a
-%               structure. When first calling the line-search, it should be
-%               passed as the empty matrix []. For subsequent calls
-%               (pertaining to the same solver call), the previously
-%               returned lsmem should be passed as input. This memory
-%               holder gives the line-search a chance to exploit knowledge
-%               of previous decisions to make new decisions.
+%  newkey : key associated to newx in storedb
+%  lsstats : statistics about the line-search procedure
+%            (stepsize, number of trials etc).
 %
 % See also: steepestdescent conjugategradients linesearch_adaptive
 
@@ -56,26 +53,43 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 % Original author: Nicolas Boumal, Dec. 30, 2012.
 % Contributors: 
 % Change log: 
-%     Sept. 13, 2013 (NB) : User control over the parameters of the
-%                           linesearch via the options
-%                           ls_contraction_factor, ls_optimism,
-%                           ls_suff_decr and ls_max_steps. See in code for
-%                           the effect of those.
-%     Sept. 13, 2013 (NB) : The automatic direction reversal feature was
-%                           removed (it triggered when df0 > 0). Direction
-%                           reversal is a decision that needs to be made by
-%                           the solver, so it can know about it.
-%     Sept. 13, 2013 (NB) : The linesearch is now invariant under rescaling
-%                           of the cost function f. That is, if f is
-%                           replaced by 8*f (and hence the directional
-%                           derivatives of f are scaled accordingly), the
-%                           stepsizes computed will not change.
-%     Nov. 7, 2013 (NB) :   The linesearch is now invariant under rescaling
-%                           of the search direction d. The meaning of
-%                           stepsize is also more clear in the comments.
-%                           Added a parameter ls_initial_stepsize to give
-%                           users control over the first step size trial.
+%
+%	Sept. 13, 2013 (NB):
+%       User control over the parameters of the linesearch via the options
+%       ls_contraction_factor, ls_optimism, ls_suff_decr and ls_max_steps.
+%       See in code for the effect of those.
+% 
+%   Sept. 13, 2013 (NB):
+%       The automatic direction reversal feature was removed (it triggered
+%       when df0 > 0). Direction reversal is a decision that needs to be
+%       made by the solver, so it can know about it.
+% 
+%	Sept. 13, 2013 (NB):
+%       The linesearch is now invariant under rescaling of the cost
+%       function f. That is, if f is replaced by 8*f (and hence the
+%       directional derivatives of f are scaled accordingly), the
+%       stepsizes computed will not change.
+% 
+%   Nov. 7, 2013 (NB):
+%       The linesearch is now invariant under rescaling of the search
+%       direction d. The meaning of stepsize is also more clear in the
+%       comments. Added a parameter ls_initial_stepsize to give users
+%       control over the first step size trial.
+%
+%   April 3, 2015 (NB):
+%       Works with the new StoreDB class system.
+%
+%   April 8, 2015 (NB):
+%       Got rid of lsmem input/output: now maintained in storedb.internal.
 
+
+    % Allow omission of the key, and even of storedb.
+    if ~exist('key', 'var')
+        if ~exist('storedb', 'var')
+            storedb = StoreDB();
+        end
+        key = storedb.getNewKey();
+    end
 
     % Backtracking default parameters. These can be overwritten in the
     % options structure which is passed to the solver.
@@ -85,6 +99,9 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     default_options.ls_max_steps = 25;
     default_options.ls_initial_stepsize = 1;
     
+    if ~exist('options', 'var') || isempty(options)
+        options = struct();
+    end
     options = mergeOptions(default_options, options);
     
     contraction_factor = options.ls_contraction_factor;
@@ -107,11 +124,14 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     % If we know about what happened at the previous step, we can leverage
     % that to compute an initial guess for the step size, as inspired from
     % Nocedal&Wright, p59.
-    if isstruct(lsmem) && isfield(lsmem, 'f0')
-        % Pick initial step size based on where we were last time,
-        alpha = 2*(f0-lsmem.f0)/df0;
-        % and go look a little further (or less far), just in case.
-        alpha = optimism*alpha;
+    if isfield(storedb.internal, 'lsmem')
+        lsmem = storedb.internal;
+        if isfield(lsmem, 'f0')
+            % Pick initial step size based on where we were last time,
+            alpha = 2*(f0 - lsmem.f0) / df0;
+            % and go look a little further (or less far), just in case.
+            alpha = optimism*alpha;
+        end
     end
     
     % If we have no information about the previous iteration (maybe this is
@@ -129,7 +149,8 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 
     % Make the chosen step and compute the cost there.
     newx = problem.M.retr(x, d, alpha);
-    [newf storedb] = getCost(problem, newx, storedb);
+    newkey = storedb.getNewKey();
+    newf = getCost(problem, newx, storedb, newkey);
     cost_evaluations = 1;
     
     % Backtrack while the Armijo criterion is not satisfied
@@ -140,7 +161,8 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
         
         % and look closer down the line
         newx = problem.M.retr(x, d, alpha);
-        [newf storedb] = getCost(problem, newx, storedb);
+        newkey = storedb.getNewKey();
+        newf = getCost(problem, newx, storedb, newkey);
         cost_evaluations = cost_evaluations + 1;
         
         % Make sure we don't run out of budget
@@ -154,6 +176,7 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     if newf > f0
         alpha = 0;
         newx = x;
+        newkey = key;
         newf = f0; %#ok<NASGU>
     end
     
@@ -161,13 +184,13 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     % retract to make the step from x to newx. Since the step is alpha*d:
     stepsize = alpha * norm_d;
 
-    % Save the situtation faced now so that at the next iteration, we will
-    % know something about the previous decision.
-    lsmem.f0 = f0;
-    lsmem.df0 = df0;
-    lsmem.stepsize = stepsize;
+    % Save the situtation faced now so that, at the next iteration,
+    % we will know something about the previous decision.
+    storedb.internal.lsmem.f0 = f0;
+    storedb.internal.lsmem.df0 = df0;
+    storedb.internal.lsmem.stepsize = stepsize;
     
-    % Save some statistics also, for possible analysis.
+    % Return some statistics also, for possible analysis.
     lsstats.costevals = cost_evaluations;
     lsstats.stepsize = stepsize;
     lsstats.alpha = alpha;

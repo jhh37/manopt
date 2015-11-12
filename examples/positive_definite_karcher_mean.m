@@ -36,7 +36,7 @@ function X = positive_definite_karcher_mean(A)
         for i = 1 : m
             noise = 0.01*randn(n);
             noise = (noise + noise')/2;
-            [V D] = eig(ref + noise);
+            [V, D] = eig(ref + noise);
             A(:, :, i) = V*diag(max(.01, diag(D)))*V';
         end
     end
@@ -62,6 +62,9 @@ function X = positive_definite_karcher_mean(A)
     problem.M = M;
     problem.cost = @cost;
     problem.grad = @grad;
+    
+    % Explicitly pick an approximate Hessian for the trust-region method
+    problem.approxhess = approxhessianFD(problem, struct('stepsize', 1e-4));
     
     % The functions below make many redundant computations. This
     % performance hit can be alleviated by using the caching system. We go

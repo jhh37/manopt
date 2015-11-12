@@ -21,38 +21,41 @@ function M = grassmannfactory(n, p, k)
 %
 % By default, k = 1.
 %
-% See also: stiefelfactory
+% See also: stiefelfactory grassmanncomplexfactory grassmanngeneralizedfactory
 
 % This file is part of Manopt: www.manopt.org.
 % Original author: Nicolas Boumal, Dec. 30, 2012.
 % Contributors: 
 % Change log: 
-%   March 22, 2013 (NB) : Implemented geodesic distance.
-%   April 17, 2013 (NB) : Retraction changed to the polar decomposition, so
-%                         that the vector transport is now correct, in the
-%                         sense that it is compatible with the retraction,
-%                         i.e., transporting a tangent vector G from U to V
-%                         where V = Retr(U, H) will give Z, and
-%                         transporting GQ from UQ to VQ will give ZQ: there
-%                         is no dependence on the representation, which is
-%                         as it should be. Notice that the polar
-%                         factorization requires an SVD whereas the qfactor
-%                         retraction requires a QR decomposition, which is
-%                         cheaper. Hence, if the retraction happens to be a
-%                         bottleneck in your application and you are not
-%                         using vector transports, you may want to replace
-%                         the retraction with a qfactor.
-%   July  4, 2013 (NB)  : Added support for the logarithmic map 'log'.
-%   July  5, 2013 (NB)  : Added support for ehess2rhess.
-%   June 24, 2014 (NB)  : Small bug fix in the retraction, and added final
-%                         re-orthonormalization at the end of the
-%                         exponential map. This follows discussions on the
-%                         forum where it appeared there is a significant
-%                         loss in orthonormality without that extra step.
-%                         Also changed the randvec function so that it now
-%                         returns a globally normalized vector, not a
-%                         vector where each component is normalized (this
-%                         only matters if k>1).
+%   March 22, 2013 (NB) :
+%       Implemented geodesic distance.
+% 
+%   April 17, 2013 (NB) :
+%       Retraction changed to the polar decomposition, so that the vector
+%       transport is now correct, in the sense that it is compatible with
+%       the retraction, i.e., transporting a tangent vector G from U to V
+%       where V = Retr(U, H) will give Z, and transporting GQ from UQ to VQ
+%       will give ZQ: there is no dependence on the representation, which
+%       is as it should be. Notice that the polar factorization requires an
+%       SVD whereas the qfactor retraction requires a QR decomposition,
+%       which is cheaper. Hence, if the retraction happens to be a
+%       bottleneck in your application and you are not using vector
+%       transports, you may want to replace the retraction with a qfactor.
+% 
+%   July  4, 2013 (NB) :
+%       Added support for the logarithmic map 'log'.
+%
+%   July  5, 2013 (NB) :
+%       Added support for ehess2rhess.
+%
+%   June 24, 2014 (NB) :
+%       Small bug fix in the retraction, and added final
+%       re-orthonormalization at the end of the exponential map. This
+%       follows discussions on the forum where it appeared there is a
+%       significant loss in orthonormality without that extra step. Also
+%       changed the randvec function so that it now returns a globally
+%       normalized vector, not a vector where each component is normalized
+%       (this only matters if k>1).
 
     assert(n >= p, ...
            ['The dimension n of the ambient space must be larger ' ...
@@ -84,8 +87,8 @@ function M = grassmannfactory(n, p, k)
         for i = 1 : k
             cos_princ_angle = svd(XtY(:, :, i));
             % Two next instructions not necessary: the imaginary parts that
-            % would appear if the cosines are not between -1 and 1 when
-            % passed to the acos function would be very small, and would
+            % would appear if the cosines are not between -1 and 1, when
+            % passed to the acos function, would be very small, and would
             % thus vanish when the norm is taken.
             % cos_princ_angle = min(cos_princ_angle,  1);
             % cos_princ_angle = max(cos_princ_angle, -1);
@@ -146,7 +149,7 @@ function M = grassmannfactory(n, p, k)
         end
         Y = zeros(size(X));
         for i = 1 : k
-            [u s v] = svd(tU(:, :, i), 0);
+            [u, s, v] = svd(tU(:, :, i), 0);
             cos_s = diag(cos(diag(s)));
             sin_s = diag(sin(diag(s)));
             Y(:, :, i) = X(:, :, i)*v*cos_s*v' + u*sin_s*v';
@@ -203,7 +206,7 @@ function M = grassmannfactory(n, p, k)
         U = U / norm(U(:));
     end
     
-    M.lincomb = @lincomb;
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(x) zeros(n, p, k);
     
@@ -213,18 +216,5 @@ function M = grassmannfactory(n, p, k)
     M.vec = @(x, u_mat) u_mat(:);
     M.mat = @(x, u_vec) reshape(u_vec, [n, p, k]);
     M.vecmatareisometries = @() true;
-
-end
-
-% Linear combination of tangent vectors
-function d = lincomb(x, a1, d1, a2, d2) %#ok<INUSL>
-
-    if nargin == 3
-        d = a1*d1;
-    elseif nargin == 5
-        d = a1*d1 + a2*d2;
-    else
-        error('Bad use of grassmann.lincomb.');
-    end
 
 end

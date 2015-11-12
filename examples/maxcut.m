@@ -1,4 +1,4 @@
-function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
+function [x, cutvalue, cutvalue_upperbound, Y] = maxcut(L, r)
 % Algorithm to (try to) compute a maximum cut of a graph, via SDP approach.
 % 
 % function x = maxcut(L)
@@ -56,9 +56,12 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
 %
 % Change log:
 %   
+%   April 3, 2015 (NB):
+%       L products now counted with the new shared memory system. This is
+%       more reliable and more flexible than using a global variable.
 
 
-    % If no inputs are provided, generate a random Laplacian.
+    % If no inputs are provided, generate a random graph Laplacian.
     % This is for illustration purposes only.
     if ~exist('L', 'var') || isempty(L)
         n = 20;
@@ -78,8 +81,8 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
     
     % We will let the rank increase. Each rank value will generate a cut.
     % We have to go up in the rank to eventually find a certificate of SDP
-    % optimality. This in turn will give us an upperbound on the MAX CUT
-    % value and assure us that we're doing well, according to Goemans and
+    % optimality. This in turn will provide an upperbound on the MAX CUT
+    % value and ensure that we're doing well, according to Goemans and
     % Williamson's argument. In practice though, the good cuts often come
     % up for low rank values, so we better keep track of the best one.
     best_x = ones(n, 1);
@@ -111,7 +114,9 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
             Dy = spdiags(sum(LY0.*Y0, 2), 0, n, n);
             Sy = (Dy - L)/4;
             % Find the smallest (the "most negative") eigenvalue of Sy.
-            [v, s] = eigs(Sy, 1, 'SA');
+            eigsopts.issym = true;
+            eigsopts.isreal = true;
+            [v, s] = eigs(Sy, 1, 'SA', eigsopts);
             % If there is no negative eigenvalue for Sy, than we are not at
             % a saddle point: we're actually done!
             if s >= -1e-8
@@ -147,7 +152,7 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
         % Use the Riemannian optimization based algorithm lower in this
         % file to reach a critical point (typically a local optimizer) of
         % the max cut cost with fixed rank, starting from Y0.
-        [Y info] = maxcut_fixedrank(L, Y0);
+        [Y, info] = maxcut_fixedrank(L, Y0);
         
         % Some info logging.
         thistime = [info.time];
@@ -161,8 +166,10 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
         % We can either do the random rounding as follows:
         % x = sign(Y*randn(rr, 1));
         % or extract the "PCA direction" of the points in Y and cut
-        % orthogonally to that direction, as follows:
-        [u, ~, ~] = svds(Y, 1);
+        % orthogonally to that direction, as follows (seems faster than
+        % calling svds):
+        [U, ~, ~] = svd(Y, 0);
+        u = U(:, 1);
         x = sign(u);
 
         cutvalue = (x'*L*x)/4;
@@ -184,11 +191,11 @@ function [x cutvalue cutvalue_upperbound Y] = maxcut(L, r)
 end
 
 
-function [Y info] = maxcut_fixedrank(L, Y)
+function [Y, info] = maxcut_fixedrank(L, Y)
 % Try to solve the (fixed) rank r relaxed max cut program, based on the
 % Laplacian of the graph L and an initial guess Y. L is nxn and Y is nxr.
 
-    [n r] = size(Y);
+    [n, r] = size(Y);
     assert(all(size(L) == n));
     
     % The fixed rank elliptope geometry describes symmetric, positive
@@ -206,7 +213,7 @@ function [Y info] = maxcut_fixedrank(L, Y)
     % % For rapid prototyping, these lines suffice to describe the cost
     % % function and its gradient and Hessian (here expressed using the
     % % Euclidean gradient and Hessian).
-    % problem.cost = @(Y)  -trace(Y'*L*Y)/4;
+    % problem.cost  = @(Y)  -trace(Y'*L*Y)/4;
     % problem.egrad = @(Y) -(L*Y)/2;
     % problem.ehess = @(Y, U) -(L*U)/2;
     
@@ -214,55 +221,59 @@ function [Y info] = maxcut_fixedrank(L, Y)
     % cost, gradient and Hessian using the caching system (the store
     % structure). This alows to execute exactly the required number of
     % multiplications with the matrix L. These multiplications are counted
-    % using the Lproducts_counter and registered for each iteration in the
-    % info structure outputted by solvers, via the statsfun function.
-    % Notice that we do not use the store structure to count: this does not
-    % behave well in general and is not advised.
-    
-    Lproducts_counter = 0;
+    % using the shared memory in the store structure: that memory is
+    % shared , so we get access to the same data, regardless of the
+    % point Y currently visited.
 
     % For every visited point Y, we will need L*Y. This function makes sure
     % the quantity L*Y is available, but only computes it if it wasn't
     % already computed.
     function store = prepare(Y, store)
         if ~isfield(store, 'LY')
+            % Compute and store the product for the current point Y.
             store.LY = L*Y;
-            Lproducts_counter = Lproducts_counter + 1;
+            % Create / increment the shared counter (independent of Y).
+            if isfield(store.shared, 'counter')
+                store.shared.counter = store.shared.counter + 1;
+            else
+                store.shared.counter = 1;
+            end
         end
     end
 
     problem.cost = @cost;
-    function [f store] = cost(Y, store)
+    function [f, store] = cost(Y, store)
         store = prepare(Y, store);
         LY = store.LY;
-        f = -(Y(:)'*LY(:))/4; % = -trace(Y'*LY)/4;
+        f = -(Y(:)'*LY(:))/4; % = -trace(Y'*LY)/4; but faster
     end
 
-    problem.grad = @grad;
-    function [g store] = grad(Y, store)
+    problem.egrad = @egrad;
+    function [g, store] = egrad(Y, store)
         store = prepare(Y, store);
         LY = store.LY;
-        g = manifold.egrad2rgrad(Y, -LY/2);
+        g = -LY/2;
     end
 
-    problem.hess = @hess;
-    function [h store] = hess(Y, U, store)
-        store = prepare(Y, store);
-        LY = store.LY;
+    problem.ehess = @ehess;
+    function [h, store] = ehess(Y, U, store)
+        store = prepare(Y, store); % this line is not strictly necessary
         LU = L*U;
-        Lproducts_counter = Lproducts_counter + 1;
-        h = manifold.ehess2rhess(Y, -LY/2, -LU/2, U);
+        store.shared.counter = store.shared.counter + 1;
+        h = -LU/2;
     end
 
     % statsfun is called exactly once after each iteration (including after
     % the evaluation of the cost at the initial guess). We then register
-    % the value of the Lproducts counter (which counts how many product
-    % were needed since the last iteration), and reset it to zero.
-    options.statsfun = @statsfun;
-    function stats = statsfun(problem, Y, stats, store) %#ok
-        stats.Lproducts = Lproducts_counter;
-        Lproducts_counter = 0;
-    end
+    % the value of the L-products counter (which counts how many products
+    % were needed so far).
+    % options.statsfun = @statsfun;
+    % function stats = statsfun(problem, Y, stats, store) %#ok
+    %     stats.Lproducts = store.shared.counter;
+    % end
+    % Equivalent, but simpler syntax:
+    options.statsfun = statsfunhelper('Lproducts', ...
+                     @(problem, Y, stats, store) store.shared.counter );
     
 
     % % Diagnostics tools: to make sure the gradient and Hessian are
@@ -291,9 +302,8 @@ function [Y info] = maxcut_fixedrank(L, Y)
     % options.miniter = 5;
     
     options.verbosity = 2;
-    Lproducts_counter = 0;
-    [Y Ycost info] = trustregions(problem, Y, options); %#ok
+    [Y, Ycost, info] = trustregions(problem, Y, options); %#ok<ASGLU>
     
-    % fprintf('Products with L: %d\n', sum([info.Lproducts]));
+    fprintf('Products with L: %d\n', max([info.Lproducts]));
 
 end

@@ -59,8 +59,11 @@ function M = spherefactory(n, m)
     function v = logarithm(x1, x2)
         v = M.proj(x1, x2 - x1);
         di = M.dist(x1, x2);
-		nv = norm(v, 'fro');
-		v = v * (di / nv);
+        % If the two points are "far apart", correct the norm.
+        if di > 1e-6
+            nv = norm(v, 'fro');
+            v = v * (di / nv);
+        end
     end
     
     M.hash = @(x) ['z' hashmd5(x(:))];
@@ -69,7 +72,7 @@ function M = spherefactory(n, m)
     
     M.randvec = @(x) randomvec(n, m, x);
     
-    M.lincomb = @lincomb;
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(x) zeros(n, m);
     
@@ -98,11 +101,11 @@ function y = exponential(x, d, t)
     
     nrm_td = norm(td, 'fro');
     
-    if nrm_td > 1e-6
+    if nrm_td > 4.5e-8
         y = x*cos(nrm_td) + td*(sin(nrm_td)/nrm_td);
     else
-        % if the step is too small, to avoid dividing by nrm_td, we choose
-        % to approximate with this retraction-like step.
+        % If the step is too small to accurately evaluate sin(x)/x,
+        % then sin(x)/x is almost indistinguishable from 1.
         y = x + td;
         y = y / norm(y, 'fro');
     end
@@ -135,18 +138,5 @@ function d = randomvec(n, m, x)
     d = randn(n, m);
     d = d - x*(x(:).'*d(:));
     d = d / norm(d, 'fro');
-
-end
-
-% Linear combination of tangent vectors
-function d = lincomb(x, a1, d1, a2, d2) %#ok<INUSL>
-
-    if nargin == 3
-        d = a1*d1;
-    elseif nargin == 5
-        d = a1*d1 + a2*d2;
-    else
-        error('Bad use of sphere.lincomb.');
-    end
 
 end

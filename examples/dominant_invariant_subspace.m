@@ -20,6 +20,8 @@ function [X, info] = dominant_invariant_subspace(A, p)
 % and easy, but not always efficient. Having a look at the formulas
 % implemented in these functions can help rewrite the code without them,
 % possibly more efficiently.
+%
+% See also: dominant_invariant_subspace_complex
 
 % This file is part of Manopt and is copyrighted. See the license file.
 %
@@ -55,7 +57,7 @@ function [X, info] = dominant_invariant_subspace(A, p)
     problem.hess = @(X, H) -2*Gr.ehess2rhess(X, A*X, A*H, H);
     
     % Execute some checks on the derivatives for early debugging.
-    % These things can be commented out of course.
+    % These can be commented out.
     % checkgradient(problem);
     % pause;
     % checkhessian(problem);

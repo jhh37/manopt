@@ -1,9 +1,9 @@
-function [stepsize, newx, storedb, lsmem, lsstats] = ...
-           linesearch_hint(problem, x, d, f0, df0, options, storedb, lsmem)
+function [stepsize, newx, newkey, lsstats] = ...
+             linesearch_hint(problem, x, d, f0, df0, options, storedb, key)
 % Armijo line-search based on the line-search hint in the problem structure.
 %
-% function [stepsize, newx, storedb, lsmem, lsstats] = 
-%          linesearch_hint(problem, x, d, f0, df0, options, storedb, lsmem)
+% function [stepsize, newx, newkey, lsstats] = 
+%            linesearch_hint(problem, x, d, f0, df0, options, storedb, key)
 %
 % Base line-search algorithm for descent methods, based on a simple
 % backtracking method. The search direction provided has to be a descent
@@ -16,30 +16,11 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 % size is reduced geometrically until a satisfactory step size is obtained
 % or until a failure criterion triggers.
 % 
-% Below, the step will be constructed as alpha*d, and the step size is the
-% norm of that vector, thus: stepsize = alpha*norm_d. The step is executed
-% by retracting the vector alpha*d from the current point x, giving newx.
+% Below, the step is constructed as alpha*d, and the step size is the norm
+% of that vector, thus: stepsize = alpha*norm_d. The step is executed by
+% retracting the vector alpha*d from the current point x, giving newx.
 %
-% Inputs
-%
-%  problem : structure holding the description of the optimization problem
-%  x : current point on the manifold problem.M
-%  d : tangent vector at x (descent direction)
-%  f0 : cost value at x
-%  df0 : directional derivative at x along d
-%  options : options structure (see in code for usage)
-%  storedb : store database structure for caching purposes
-%  lsmem : not used
-%
-% Outputs
-%
-%  stepsize : norm of the vector retracted to reach newx from x.
-%  newx : next iterate suggested by the line-search algorithm, such that
-%         the retraction at x of the vector alpha*d reaches newx.
-%  storedb : the (possibly updated) store database structure.
-%  lsmem : not used.
-%  lsstats : statistics about the line-search procedure (stepsize, number
-%            of trials etc).
+% Inputs/Outputs : see help for linesearch
 %
 % See also: steepestdescent conjugategradients linesearch
 
@@ -48,7 +29,20 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
 % Contributors: 
 % Change log: 
 %
+%   April 3, 2015 (NB):
+%       Works with the new StoreDB class system.
+%
+%   April 8, 2015 (NB):
+%       Got rid of lsmem input/output.
 
+
+    % Allow omission of the key, and even of storedb.
+    if ~exist('key', 'var')
+        if ~exist('storedb', 'var')
+            storedb = StoreDB();
+        end
+        key = storedb.getNewKey();
+    end
 
     % Backtracking default parameters. These can be overwritten in the
     % options structure which is passed to the solver.
@@ -56,6 +50,9 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     default_options.ls_suff_decr = 1e-4;
     default_options.ls_max_steps = 25;
     
+    if ~exist('options', 'var') || isempty(options)
+        options = struct();
+    end
     options = mergeOptions(default_options, options);
     
     contraction_factor = options.ls_contraction_factor;
@@ -65,11 +62,12 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     % Obtain an initial guess at alpha from the problem structure. It is
     % assumed that the present line-search is only called when the problem
     % structure provides enough information for the call here to work.
-    [alpha, storedb] = getLinesearch(problem, x, d, storedb);
+    alpha = getLinesearch(problem, x, d, storedb, key);
     
     % Make the chosen step and compute the cost there.
     newx = problem.M.retr(x, d, alpha);
-    [newf, storedb] = getCost(problem, newx, storedb);
+    newkey = storedb.getNewKey();
+    newf = getCost(problem, newx, storedb, newkey);
     cost_evaluations = 1;
     
     % Backtrack while the Armijo criterion is not satisfied
@@ -80,7 +78,8 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
         
         % and look closer down the line
         newx = problem.M.retr(x, d, alpha);
-        [newf, storedb] = getCost(problem, newx, storedb);
+        newkey = storedb.getNewKey();
+        newf = getCost(problem, newx, storedb, newkey);
         cost_evaluations = cost_evaluations + 1;
         
         % Make sure we don't run out of budget
@@ -94,6 +93,7 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     if newf > f0
         alpha = 0;
         newx = x;
+        newkey = key;
         newf = f0; %#ok<NASGU>
     end
     
@@ -102,7 +102,7 @@ function [stepsize, newx, storedb, lsmem, lsstats] = ...
     norm_d = problem.M.norm(x, d);
     stepsize = alpha * norm_d;
     
-    % Save some statistics also, for possible analysis.
+    % Return some statistics also, for possible analysis.
     lsstats.costevals = cost_evaluations;
     lsstats.stepsize = stepsize;
     lsstats.alpha = alpha;

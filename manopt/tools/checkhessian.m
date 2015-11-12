@@ -11,9 +11,9 @@ function checkhessian(problem, x, d)
 % d. The test is based on a truncated Taylor series (see online Manopt
 % documentation).
 % 
-% It is also tested that the Hessian along some direction is indeed a
-% tangent vector and that the Hessian operator is symmetric w.r.t. the
-% Riemannian metric.
+% It is also tested that the result of applying the Hessian along that
+% direction is indeed a tangent vector, and that the Hessian operator is
+% symmetric w.r.t. the Riemannian metric.
 % 
 % Both x and d are optional and will be sampled at random if omitted.
 %
@@ -23,6 +23,9 @@ function checkhessian(problem, x, d)
 % Original author: Nicolas Boumal, Dec. 30, 2012.
 % Contributors: 
 % Change log: 
+%
+%   April 3, 2015 (NB):
+%       Works with the new StoreDB class system.
 
         
     % Verify that the problem description is sufficient.
@@ -35,8 +38,6 @@ function checkhessian(problem, x, d)
     if ~canGetHessian(problem)
         error('It seems no Hessian was provided.');    
     end
-    
-    dbstore = struct();
     
     x_isprovided = exist('x', 'var') && ~isempty(x);
     d_isprovided = exist('d', 'var') && ~isempty(d);
@@ -58,18 +59,21 @@ function checkhessian(problem, x, d)
     
     % Compute the value f0 at f, directional derivative df0 at x along d,
     % and Hessian along [d, d].
-    f0 = getCost(problem, x, dbstore);
-    df0 = getDirectionalDerivative(problem, x, d, dbstore);
-    d2f0 = problem.M.inner(x, d, getHessian(problem, x, d, dbstore));
+    storedb = StoreDB();
+    xkey = storedb.getNewKey();
+    f0 = getCost(problem, x, storedb, xkey);
+    df0 = getDirectionalDerivative(problem, x, d, storedb, xkey);
+    d2f0 = problem.M.inner(x, d, getHessian(problem, x, d, storedb, xkey));
     
-    % Compute the value of f at points on the geodesic (or approximation of
-    % it) originating from x, along direction d, for stepsizes in a large
-    % range given by h.
+    % Compute the value of f at points on the geodesic (or approximation
+    % of it) originating from x, along direction d, for stepsizes in a
+    % large range given by h.
     h = logspace(-8, 0, 51);
     value = zeros(size(h));
     for i = 1 : length(h)
         y = problem.M.exp(x, d, h(i));
-        value(i) = getCost(problem, y, dbstore);
+        ykey = storedb.getNewKey();
+        value(i) = getCost(problem, y, storedb, ykey);
     end
     
     % Compute the quadratic approximation of the cost function using f0,
@@ -95,7 +99,7 @@ function checkhessian(problem, x, d)
     % as the cube of the stepsize, i.e., in loglog scale, the error
     % should have a slope of 3.
     window_len = 10;
-    [range poly] = identify_linear_piece(log10(h), log10(err), window_len);
+    [range, poly] = identify_linear_piece(log10(h), log10(err), window_len);
     hold on;
         loglog(h(range), 10.^polyval(poly, log10(h(range))), ...
                'r-', 'LineWidth', 3);
@@ -104,11 +108,14 @@ function checkhessian(problem, x, d)
     fprintf('The slope should be 3. It appears to be: %g.\n', poly(1));
     fprintf(['If it is far from 3, then directional derivatives or ' ...
              'the Hessian might be erroneous.\n']);
+    fprintf(['Note: if the exponential map is only approximate, and it '...
+             'is not a second-order approximation,\nthen it is normal ' ...
+             'for the slope test to fail. Check the factory for this.\n']);
 
     
     %% Check that the Hessian at x along direction d is a tangent vector.
     if isfield(problem.M, 'tangent')
-        hess = getHessian(problem, x, d, dbstore);
+        hess = getHessian(problem, x, d, storedb, xkey);
         phess = problem.M.tangent(x, hess);
         residual = problem.M.lincomb(x, 1, hess, -1, phess);
         err = problem.M.norm(x, residual);
@@ -117,7 +124,7 @@ function checkhessian(problem, x, d)
         fprintf(['If it is far from 0, then the Hessian is not in the ' ...
                  'tangent plane.\n']);
     else
-        fprintf(['Unfortunately, Manopt was un able to verify that the '...
+        fprintf(['Unfortunately, Manopt was unable to verify that the '...
                  'Hessian is indeed a tangent vector.\nPlease verify ' ...
                  'this manually.']);
     end    
@@ -125,8 +132,8 @@ function checkhessian(problem, x, d)
     %% Check that the Hessian at x is symmetric.
     d1 = problem.M.randvec(x);
     d2 = problem.M.randvec(x);
-    h1 = getHessian(problem, x, d1, dbstore);
-    h2 = getHessian(problem, x, d2, dbstore);
+    h1 = getHessian(problem, x, d1, storedb, xkey);
+    h2 = getHessian(problem, x, d2, storedb, xkey);
     v1 = problem.M.inner(x, d1, h2);
     v2 = problem.M.inner(x, h1, d2);
     value = v1-v2;

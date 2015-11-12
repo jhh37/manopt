@@ -31,6 +31,12 @@ function M = obliquefactory(n, m, transposed)
 %       bsxfun formulation of column normalization, which avoids using for
 %       loops and provides performance gains. The exponential still uses a
 %       for loop.
+%
+%	April 4, 2015 (NB) :
+%       Log function modified to avoid NaN's appearing for close by points.
+%
+%	April 13, 2015 (NB) :
+%       Exponential now without for-loops.
 
     
     if ~exist('transposed', 'var') || isempty(transposed)
@@ -87,15 +93,14 @@ function M = obliquefactory(n, m, transposed)
             t = 1.0;
         end
 
-        m = size(x, 2);
-        y = zeros(size(x));
-        if t ~= 0
-            for i = 1 : m
-                y(:, i) = sphere_exponential(x(:, i), d(:, i), t);
-            end
-        else
-            y = x;
-        end
+        td = t*d;
+        nrm_td = sqrt(sum(td.^2, 1));
+
+        y = bsxfun(@times, x, cos(nrm_td)) + bsxfun(@times, td, sin(nrm_td) ./ nrm_td);
+        
+        % For those columns where the step is too small, use a retraction.
+        exclude = (nrm_td <= 4.5e-8);
+        y(:, exclude) = normalize_columns(x(:, exclude) + td(:, exclude));
 
         y = trnsp(y);
     end
@@ -107,9 +112,12 @@ function M = obliquefactory(n, m, transposed)
         
         v = M.proj(x1, x2 - x1);
         dists = acos(sum(x1.*x2, 1));
-        norms = sqrt(sum(v.^2, 1));
+        norms = real(sqrt(sum(v.^2, 1)));
 		factors = dists./norms;
-		% factors(dists <= 1e-6) = 1;
+        % For very close points, dists is almost equal to norms, but
+        % because they are both almost zero, the division above can return
+        % NaN's. To avoid that, we force those ratios to 1.
+		factors(dists <= 1e-6) = 1;
 		v = bsxfun(@times, v, factors);
         
         v = trnsp(v);
@@ -141,7 +149,7 @@ function M = obliquefactory(n, m, transposed)
     
     M.randvec = @(x) trnsp(randomvec(n, m, trnsp(x)));
     
-    M.lincomb = @lincomb;
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(x) trnsp(zeros(n, m));
     
@@ -170,8 +178,9 @@ end
 % Given a matrix X, returns the same matrix but with each column scaled so
 % that they have unit 2-norm.
 function X = normalize_columns(X)
-	norms = sqrt(sum(X.^2, 1));
-	X = bsxfun(@times, X, 1./norms);
+	% This is faster than norms(X, 2, 1) for small X, and as fast for large X.
+	nrms = sqrt(sum(X.^2, 1));
+	X = bsxfun(@times, X, 1./nrms);
 end
 
 % Orthogonal projection of the ambient vector H onto the tangent space at X
@@ -194,28 +203,6 @@ function PXH = projection(X, H)
 
 end
 
-% Exponential on the sphere.
-function y = sphere_exponential(x, d, t)
-
-    if nargin == 2
-        t = 1.0;
-    end
-    
-    td = t*d;
-    
-    nrm_td = norm(td);
-    
-    if nrm_td > 1e-6
-        y = x*cos(nrm_td) + (td/nrm_td)*sin(nrm_td);
-    else
-        % if the step is too small, to avoid dividing by nrm_td, we choose
-        % to approximate with this retraction-like step.
-        y = x + td;
-        y = y / norm(y);
-    end
-
-end
-
 % Uniform random sampling on the sphere.
 function x = random(n, m)
 
@@ -229,18 +216,5 @@ function d = randomvec(n, m, x)
     d = randn(n, m);
     d = projection(x, d);
     d = d / norm(d(:));
-
-end
-
-% Linear combination of tangent vectors
-function d = lincomb(x, a1, d1, a2, d2) %#ok<INUSL>
-
-    if nargin == 3
-        d = a1*d1;
-    elseif nargin == 5
-        d = a1*d1 + a2*d2;
-    else
-        error('Bad use of oblique.lincomb.');
-    end
 
 end

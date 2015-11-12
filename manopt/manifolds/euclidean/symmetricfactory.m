@@ -36,7 +36,7 @@ function M = symmetricfactory(n, k)
     
     M.egrad2rgrad = M.proj;
     
-    %M.ehess2rhess = @(x, eg, eh, d) eh;
+    M.ehess2rhess = @(x, eg, eh, d) M.proj(x, eh);
     
     M.tangent = @(x, d) d;
     
@@ -63,16 +63,7 @@ function M = symmetricfactory(n, k)
         u = u / norm(u(:), 'fro');
     end
     
-    M.lincomb = @lincomb;
-    function v = lincomb(x, a1, d1, a2, d2) %#ok<INUSL>
-        if nargin == 3
-            v = a1*d1;
-        elseif nargin == 5
-            v = a1*d1 + a2*d2;
-        else
-            error('Bad usage of euclidean.lincomb');
-        end
-    end
+    M.lincomb = @matrixlincomb;
     
     M.zerovec = @(x) zeros(n, n, k);
     
@@ -80,8 +71,39 @@ function M = symmetricfactory(n, k)
     
     M.pairmean = @(x1, x2) .5*(x1+x2);
     
-    M.vec = @(x, u_mat) u_mat(:);
-    M.mat = @(x, u_vec) reshape(u_vec, [m, n]);
+    
+    % Elaborate list of indices of diagonal entries of an nxnxk matrix.
+    single_diag_entries = (1:(n+1):n^2)';
+    all_diag_entries = bsxfun(@plus, single_diag_entries, n^2*(0:(k-1)));
+    all_diag_entries = all_diag_entries(:);
+    
+    % Likewise, elaborate list of indices of upper-triangular entries.
+    single_upper_triangle = find(triu(ones(n), 1));
+    all_upper_triangle = bsxfun(@plus, single_upper_triangle, n^2*(0:(k-1)));
+    all_upper_triangle = all_upper_triangle(:);
+    
+    % To vectorize a matrix, we extract all diagonal entries, then all
+    % upper-triangular entries, the latter being scaled by sqrt(2) to
+    % ensure isometry, that is: given two tangent vectors U and V at a
+    % point X, M.inner(X, U, V) is equal to u'*v, where u = M.vec(X, U) and
+    % likewise for v. This construction has the advantage of providing a
+    % vectorized representation of matrices that has the same length as the
+    % intrinsic dimension of the space they live in.
+    M.vec = @(x, u_mat) [u_mat(all_diag_entries) ; ...
+                         sqrt(2)*u_mat(all_upper_triangle)];
+    M.mat = @matricize;
+    function u_mat = matricize(X, u_vec) %#ok<INUSL>
+        u_mat = zeros(n, n, k);
+        u_mat(all_upper_triangle) = u_vec((k*n+1):end) / sqrt(2);
+        u_mat = u_mat + multitransp(u_mat);
+        u_mat(all_diag_entries) = u_vec(1:(k*n));
+    end
     M.vecmatareisometries = @() true;
 
 end
+
+% Former, easier versions for vec / mat. They had the disadvantage of
+% giving vector representations of length k*n^2, instead of k*n*(n+1).
+% M.vec = @(x, u_mat) u_mat(:);
+% M.mat = @(x, u_vec) reshape(u_vec, [m, n]);
+% M.vecmatareisometries = @() true;
